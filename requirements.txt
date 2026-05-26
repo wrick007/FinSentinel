@@ -1,0 +1,15 @@
+gradio
+transformers
+torch
+pandas
+numpy
+yfinance
+feedparser
+beautifulsoup4
+requests
+scikit-learn
+matplotlib
+plotly
+ta
+joblib
+python-dotenv
