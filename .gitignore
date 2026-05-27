@@ -20,3 +20,5 @@ outputs/
 Thumbs.db
 .vscode/
 .idea/
+
+.gradio

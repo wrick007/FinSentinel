@@ -1,10 +1,11 @@
+from dbm import error
 from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.config import DEFAULT_INTERVAL, DEFAULT_PERIOD
+from src.config import DEFAULT_INTERVAL, DEFAULT_PERIOD, RAW_DATA_DIR
 from src.utils import (
     clean_numeric_series,
     logger,
@@ -107,7 +108,18 @@ def get_price_data(
         )
 
         df = clean_price_data(df)
+        try:
+            prices_dir = RAW_DATA_DIR / "prices"
+            prices_dir.mkdir(parents=True, exist_ok=True)
 
+            safe_ticker = ticker.replace(".", "_").replace("-", "_")
+            file_path = prices_dir / f"{safe_ticker}_{period}_{interval}.csv"
+
+            if not df.empty:
+                df.to_csv(file_path)
+        except Exception as error:
+            logger.warning("Could not save price data: %s", error)
+        
         if df.empty:
             logger.warning("No price data found for ticker %s", ticker)
 

@@ -13,3 +13,9 @@ plotly
 ta
 joblib
 python-dotenv
+lightgbm
+xgboost
+datasets
+accelerate
+evaluate
+sentencepiece
