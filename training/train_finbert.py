@@ -1,16 +1,17 @@
 import argparse
+import inspect
 import json
-import os
 import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -57,12 +58,42 @@ class FinancialSentimentDataset(torch.utils.data.Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        item = {
-            key: torch.tensor(value[idx])
-            for key, value in self.encodings.items()
-        }
-        item["labels"] = torch.tensor(int(self.labels[idx]))
+        item = {}
+
+        for key, value in self.encodings.items():
+            item[key] = torch.tensor(value[idx])
+
+        item["labels"] = torch.tensor(int(self.labels[idx]), dtype=torch.long)
+
         return item
+
+
+class WeightedTrainer(Trainer):
+    def __init__(self, class_weights=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
+        else:
+            self.class_weights = None
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.get("logits")
+
+        if self.class_weights is not None:
+            weights = self.class_weights.to(logits.device)
+            loss_fct = torch.nn.CrossEntropyLoss(weight=weights)
+        else:
+            loss_fct = torch.nn.CrossEntropyLoss()
+
+        loss = loss_fct(
+            logits.view(-1, model.config.num_labels),
+            labels.view(-1),
+        )
+
+        return (loss, outputs) if return_outputs else loss
 
 
 def set_seed(seed: int = 42) -> None:
@@ -81,16 +112,29 @@ def normalize_label(label: Any) -> str:
         "pos": "positive",
         "positive": "positive",
         "bullish": "positive",
+        "buy": "positive",
+        "up": "positive",
+        "good": "positive",
         "1": "positive",
+        "+1": "positive",
         "2": "positive",
+        "4": "positive",
+        "5": "positive",
+
         "neg": "negative",
         "negative": "negative",
         "bearish": "negative",
+        "sell": "negative",
+        "down": "negative",
+        "bad": "negative",
         "-1": "negative",
-        "0": "negative",
+
         "neu": "neutral",
         "neutral": "neutral",
         "mixed": "neutral",
+        "hold": "neutral",
+        "0": "neutral",
+        "3": "neutral",
     }
 
     return mapping.get(label, label)
@@ -110,9 +154,11 @@ def detect_text_label_columns(df: pd.DataFrame) -> Tuple[str, str]:
     possible_label_cols = [
         "label",
         "sentiment",
+        "Sentiment",
         "target",
         "class",
         "category",
+        "polarity",
     ]
 
     text_col = None
@@ -143,7 +189,7 @@ def load_sentiment_dataset(input_path: Path) -> pd.DataFrame:
     if not input_path.exists():
         raise FileNotFoundError(
             f"Sentiment dataset not found: {input_path}. "
-            "Create data/processed/sentiment_dataset.csv with columns text,label."
+            "Create data/processed/sentiment_dataset.csv with text,label columns."
         )
 
     df = pd.read_csv(input_path)
@@ -166,14 +212,16 @@ def load_sentiment_dataset(input_path: Path) -> pd.DataFrame:
     if result.empty:
         raise ValueError("No valid sentiment rows after cleaning.")
 
+    class_counts = result["label"].value_counts().to_dict()
+
+    for label in LABEL_TO_ID:
+        if label not in class_counts:
+            raise ValueError(f"Missing required label class: {label}")
+
     return result
 
 
-def tokenize_dataset(
-    tokenizer,
-    texts,
-    max_length: int = 128,
-):
+def tokenize_dataset(tokenizer, texts, max_length: int = 128):
     return tokenizer(
         list(texts),
         truncation=True,
@@ -193,6 +241,61 @@ def compute_metrics(eval_pred):
     }
 
 
+def make_training_arguments(
+    output_dir: Path,
+    learning_rate: float,
+    epochs: int,
+    batch_size: int,
+    weight_decay: float,
+    warmup_ratio: float,
+    seed: int,
+    use_fp16: bool,
+) -> TrainingArguments:
+    kwargs = {
+        "output_dir": str(output_dir / "checkpoints"),
+        "save_strategy": "epoch",
+        "learning_rate": learning_rate,
+        "per_device_train_batch_size": batch_size,
+        "per_device_eval_batch_size": batch_size,
+        "num_train_epochs": epochs,
+        "weight_decay": weight_decay,
+        "warmup_ratio": warmup_ratio,
+        "logging_dir": str(output_dir / "logs"),
+        "logging_steps": 50,
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "macro_f1",
+        "greater_is_better": True,
+        "save_total_limit": 2,
+        "fp16": use_fp16,
+        "report_to": "none",
+        "seed": seed,
+    }
+
+    signature = inspect.signature(TrainingArguments.__init__)
+
+    if "evaluation_strategy" in signature.parameters:
+        kwargs["evaluation_strategy"] = "epoch"
+    elif "eval_strategy" in signature.parameters:
+        kwargs["eval_strategy"] = "epoch"
+
+    if "logging_strategy" in signature.parameters:
+        kwargs["logging_strategy"] = "steps"
+
+    return TrainingArguments(**kwargs)
+
+
+def calculate_class_weights(labels: np.ndarray) -> np.ndarray:
+    classes = np.array([0, 1, 2])
+
+    weights = compute_class_weight(
+        class_weight="balanced",
+        classes=classes,
+        y=labels.astype(int),
+    )
+
+    return weights.astype(np.float32)
+
+
 def build_report(
     trainer: Trainer,
     test_dataset: FinancialSentimentDataset,
@@ -204,7 +307,7 @@ def build_report(
     logits = predictions.predictions
     y_pred = np.argmax(logits, axis=1)
 
-    report = {
+    return {
         "model_output_dir": str(output_dir),
         "dataset_summary": dataset_summary,
         "accuracy": float(accuracy_score(y_test, y_pred)),
@@ -227,8 +330,6 @@ def build_report(
         "id_to_label": ID_TO_LABEL,
     }
 
-    return report
-
 
 def save_json(data: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,6 +351,7 @@ def train_finbert(
     weight_decay: float = 0.01,
     warmup_ratio: float = 0.10,
     seed: int = 42,
+    use_class_weights: bool = True,
 ) -> Dict[str, Any]:
     set_seed(seed)
 
@@ -265,6 +367,9 @@ def train_finbert(
         random_state=seed,
         stratify=df["label_id"],
     )
+
+    logger.info("Train rows: %s", len(train_df))
+    logger.info("Test rows: %s", len(test_df))
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
 
@@ -302,38 +407,43 @@ def train_finbert(
 
     use_fp16 = torch.cuda.is_available()
 
-    training_args = TrainingArguments(
-        output_dir=str(output_dir / "checkpoints"),
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+    training_args = make_training_arguments(
+        output_dir=output_dir,
         learning_rate=learning_rate,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        num_train_epochs=epochs,
+        epochs=epochs,
+        batch_size=batch_size,
         weight_decay=weight_decay,
         warmup_ratio=warmup_ratio,
-        logging_dir=str(output_dir / "logs"),
-        logging_steps=50,
-        load_best_model_at_end=True,
-        metric_for_best_model="macro_f1",
-        greater_is_better=True,
-        save_total_limit=2,
-        fp16=use_fp16,
-        report_to="none",
         seed=seed,
+        use_fp16=use_fp16,
     )
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=test_dataset,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics,
-    )
+    class_weights = None
+
+    if use_class_weights:
+        class_weights = calculate_class_weights(train_df["label_id"].values)
+        logger.info("Using class weights: %s", class_weights.tolist())
+
+    trainer_kwargs = {
+    "class_weights": class_weights,
+    "model": model,
+    "args": training_args,
+    "train_dataset": train_dataset,
+    "eval_dataset": test_dataset,
+    "data_collator": data_collator,
+    "compute_metrics": compute_metrics,
+}
+
+    trainer_signature = inspect.signature(Trainer.__init__)
+
+    if "tokenizer" in trainer_signature.parameters:
+        trainer_kwargs["tokenizer"] = tokenizer
+    elif "processing_class" in trainer_signature.parameters:
+        trainer_kwargs["processing_class"] = tokenizer
+
+    trainer = WeightedTrainer(**trainer_kwargs)
 
     logger.info("Starting FinBERT fine-tuning...")
     trainer.train()
@@ -348,11 +458,15 @@ def train_finbert(
         "train_rows": int(len(train_df)),
         "test_rows": int(len(test_df)),
         "label_distribution": df["label"].value_counts().to_dict(),
+        "train_label_distribution": train_df["label"].value_counts().to_dict(),
+        "test_label_distribution": test_df["label"].value_counts().to_dict(),
         "base_model": base_model,
         "epochs": epochs,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
         "max_length": max_length,
+        "class_weights_used": use_class_weights,
+        "cuda_available": torch.cuda.is_available(),
     }
 
     report = build_report(
@@ -380,6 +494,7 @@ def print_report(report: Dict[str, Any]) -> None:
 
     print("\nConfusion matrix:")
     print("Labels: negative, neutral, positive")
+
     for row in report.get("confusion_matrix", []):
         print(row)
 
@@ -455,6 +570,12 @@ def parse_args() -> argparse.Namespace:
         help="Random seed.",
     )
 
+    parser.add_argument(
+        "--no-class-weights",
+        action="store_true",
+        help="Disable class-weighted loss.",
+    )
+
     return parser.parse_args()
 
 
@@ -472,6 +593,7 @@ def main() -> None:
         batch_size=args.batch_size,
         max_length=args.max_length,
         seed=args.seed,
+        use_class_weights=not args.no_class_weights,
     )
 
     print_report(report)
