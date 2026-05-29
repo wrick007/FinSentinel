@@ -4,7 +4,13 @@ from typing import Any, Dict, List
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-for key in ["USE_LOCAL_FINBERT", "FINBERT_MODEL_NAME", "HF_TOKEN"]:
+for key in [
+    "USE_LOCAL_FINBERT",
+    "FINBERT_MODEL_NAME",
+    "HF_TOKEN",
+    "SIGNAL_MODEL_REPO",
+    "SIGNAL_MODEL_FILENAME",
+]:
     try:
         if key in st.secrets:
             os.environ[key] = str(st.secrets[key])

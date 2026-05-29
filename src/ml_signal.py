@@ -1,10 +1,12 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
 import os
-from huggingface_hub import hf_hub_download
 import pickle
+
 import numpy as np
 import pandas as pd
+from huggingface_hub import hf_hub_download
 
 from src.config import SIGNAL_MODEL_DIR
 from src.utils import safe_float
@@ -13,6 +15,7 @@ from src.utils import safe_float
 DEFAULT_MODEL_PATH = SIGNAL_MODEL_DIR / "signal_model.pkl"
 DEFAULT_HF_MODEL_REPO = os.getenv("SIGNAL_MODEL_REPO", "mayukh007/finsentinel")
 DEFAULT_HF_SIGNAL_FILENAME = os.getenv("SIGNAL_MODEL_FILENAME", "signal_model/signal_model.pkl")
+
 
 LABEL_ID_TO_NAME = {
     0: "SELL",
@@ -42,9 +45,8 @@ def _empty_ml_signal(message: str = "ML signal model unavailable.") -> Dict[str,
         "error": None,
     }
 
-def load_signal_model_package(
-    model_path: Optional[Path] = None,
-) -> Dict[str, Any]:
+
+def load_signal_model_package(model_path: Optional[Path] = None) -> Dict[str, Any]:
     model_path = Path(model_path or DEFAULT_MODEL_PATH)
 
     if not model_path.exists():
@@ -98,6 +100,32 @@ def load_signal_model_package(
             "package": None,
         }
 
+
+def _get_pipeline_feature_names(pipeline: Any) -> List[str]:
+    names = []
+
+    if hasattr(pipeline, "feature_names_in_"):
+        try:
+            names = list(pipeline.feature_names_in_)
+        except Exception:
+            names = []
+
+    if names:
+        return names
+
+    try:
+        if hasattr(pipeline, "named_steps"):
+            for step in pipeline.named_steps.values():
+                if hasattr(step, "feature_names_in_"):
+                    names = list(step.feature_names_in_)
+                    if names:
+                        return names
+    except Exception:
+        pass
+
+    return []
+
+
 def _resolve_feature_columns(
     package: Dict[str, Any],
     feature_row: Dict[str, Any],
@@ -107,17 +135,19 @@ def _resolve_feature_columns(
     if feature_columns:
         return list(feature_columns)
 
+    pipeline = package.get("pipeline")
+    pipeline_features = _get_pipeline_feature_names(pipeline)
+
+    if pipeline_features:
+        return pipeline_features
+
     numeric_features = package.get("numeric_features") or []
     categorical_features = package.get("categorical_features") or []
 
-    inferred = []
+    combined = list(numeric_features) + list(categorical_features)
 
-    for col in numeric_features + categorical_features:
-        if col in feature_row:
-            inferred.append(col)
-
-    if inferred:
-        return inferred
+    if combined:
+        return combined
 
     excluded = {
         "label",
@@ -201,6 +231,47 @@ def _ml_score_from_probabilities(
     return LABEL_TO_SCORE.get(str(fallback_label).upper(), 0.0)
 
 
+def _add_price_features(latest: Dict[str, Any], row: pd.Series, price_df: pd.DataFrame) -> None:
+    close = safe_float(row.get("Close"), 0.0)
+    high = safe_float(row.get("High"), 0.0)
+    low = safe_float(row.get("Low"), 0.0)
+    open_price = safe_float(row.get("Open"), close)
+    volume = safe_float(row.get("Volume"), 0.0)
+
+    if high > low:
+        latest["Close_Position"] = (close - low) / (high - low)
+    else:
+        latest["Close_Position"] = 0.5
+
+    latest["Daily_Range"] = (high - low) / close if close > 0 else 0.0
+    latest["Open_Close_Return"] = (close - open_price) / open_price if open_price > 0 else 0.0
+
+    close_series = pd.to_numeric(price_df.get("Close"), errors="coerce") if "Close" in price_df.columns else pd.Series(dtype=float)
+    volume_series = pd.to_numeric(price_df.get("Volume"), errors="coerce") if "Volume" in price_df.columns else pd.Series(dtype=float)
+
+    if len(close_series.dropna()) >= 2:
+        latest["Return_1D"] = safe_float(close_series.pct_change(1).iloc[-1], 0.0)
+    else:
+        latest["Return_1D"] = 0.0
+
+    if len(close_series.dropna()) >= 6:
+        latest["Return_5D"] = safe_float(close_series.pct_change(5).iloc[-1], 0.0)
+    else:
+        latest["Return_5D"] = 0.0
+
+    if len(close_series.dropna()) >= 21:
+        latest["Return_20D"] = safe_float(close_series.pct_change(20).iloc[-1], 0.0)
+    else:
+        latest["Return_20D"] = 0.0
+
+    if len(volume_series.dropna()) >= 20:
+        volume_ma_20 = safe_float(volume_series.rolling(20).mean().iloc[-1], 0.0)
+        latest["Volume_MA_20"] = volume_ma_20
+        latest["Volume_Ratio"] = volume / volume_ma_20 if volume_ma_20 > 0 else 1.0
+    else:
+        latest["Volume_Ratio"] = 1.0
+
+
 def build_live_feature_row(
     ticker: str,
     price_df: pd.DataFrame,
@@ -211,24 +282,21 @@ def build_live_feature_row(
     advanced_signal = advanced_signal or {}
     advanced_indicators = advanced_signal.get("advanced_indicators", {})
 
-    latest = {}
+    latest: Dict[str, Any] = {}
 
     if price_df is not None and not price_df.empty:
         row = price_df.iloc[-1]
 
         for col in price_df.columns:
             value = row.get(col)
-            if pd.api.types.is_numeric_dtype(price_df[col]):
-                latest[col] = safe_float(value, 0.0)
 
-        close = safe_float(row.get("Close"), 0.0)
-        high = safe_float(row.get("High"), 0.0)
-        low = safe_float(row.get("Low"), 0.0)
+            try:
+                if pd.api.types.is_numeric_dtype(price_df[col]):
+                    latest[col] = safe_float(value, 0.0)
+            except Exception:
+                pass
 
-        if high > low and close > 0:
-            latest["Close_Position"] = (close - low) / (high - low)
-        else:
-            latest["Close_Position"] = 0.5
+        _add_price_features(latest, row, price_df)
 
     feature_row = {
         "ticker": str(ticker).upper(),
@@ -250,10 +318,7 @@ def build_live_feature_row(
         "volume_score": safe_float(indicators.get("volume_score"), 0.0),
         "risk_score": safe_float(indicators.get("risk_score"), 0.0),
 
-        "advanced_indicator_score": safe_float(
-            advanced_signal.get("advanced_indicator_score"),
-            0.0,
-        ),
+        "advanced_indicator_score": safe_float(advanced_signal.get("advanced_indicator_score"), 0.0),
         "adx": safe_float(advanced_indicators.get("adx"), 0.0),
         "stoch_k": safe_float(advanced_indicators.get("stoch_k"), 50.0),
         "stoch_d": safe_float(advanced_indicators.get("stoch_d"), 50.0),
@@ -266,7 +331,45 @@ def build_live_feature_row(
         "volatility_regime_z": safe_float(advanced_indicators.get("volatility_regime_z"), 0.0),
     }
 
+    aliases = {
+        "close": "Close",
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "volume": "Volume",
+        "rsi": "RSI",
+        "macd": "MACD",
+        "macd_signal": "MACD_Signal",
+        "macd_hist": "MACD_Hist",
+        "sma20": "SMA_20",
+        "sma50": "SMA_50",
+        "sma200": "SMA_200",
+        "atr": "ATR",
+    }
+
+    for src, dst in aliases.items():
+        if src in feature_row and dst not in feature_row:
+            feature_row[dst] = feature_row[src]
+        if dst in feature_row and src not in feature_row:
+            feature_row[src] = feature_row[dst]
+
     return feature_row
+
+
+def _build_model_input(feature_row: Dict[str, Any], feature_columns: List[str]) -> pd.DataFrame:
+    row = {}
+
+    for col in feature_columns:
+        value = feature_row.get(col, np.nan)
+
+        if isinstance(value, (np.generic,)):
+            value = value.item()
+
+        row[col] = value
+
+    X = pd.DataFrame([row], columns=feature_columns)
+
+    return X
 
 
 def predict_ml_signal(
@@ -303,7 +406,7 @@ def predict_ml_signal(
     if not feature_columns:
         return _empty_ml_signal("No matching feature columns found for live ML inference.")
 
-    X = pd.DataFrame([{col: feature_row.get(col, np.nan) for col in feature_columns}])
+    X = _build_model_input(feature_row, feature_columns)
 
     try:
         prediction = pipeline.predict(X)[0]
@@ -319,6 +422,7 @@ def predict_ml_signal(
                 probabilities = None
 
         classes = getattr(pipeline, "classes_", None)
+
         prob_dict = _probabilities_to_dict(
             probabilities,
             classes=classes,
@@ -344,6 +448,10 @@ def predict_ml_signal(
         result = _empty_ml_signal("ML signal inference failed.")
         result["error"] = str(error)
         result["feature_columns"] = feature_columns
+        result["input_columns"] = list(X.columns)
+        result["missing_from_live_features"] = [
+            col for col in feature_columns if col not in feature_row
+        ]
         return result
 
 
