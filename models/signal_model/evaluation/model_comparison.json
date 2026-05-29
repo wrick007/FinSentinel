@@ -1,0 +1,56 @@
+{
+  "models_evaluated": 3,
+  "comparison": [
+    {
+      "model_name": "randomforest",
+      "model_path": "D:\\FinSentinel\\models\\signal_model\\signal_model.pkl",
+      "rows_evaluated": 4990,
+      "accuracy": 0.514629,
+      "balanced_accuracy": 0.460997,
+      "macro_f1": 0.455417,
+      "weighted_f1": 0.520157,
+      "macro_precision": 0.453671,
+      "macro_recall": 0.460997,
+      "avg_prediction_confidence": 0.509785,
+      "total_strategy_return": 705174.694419,
+      "benchmark_return": 2993342.584253,
+      "excess_return": -2288167.889834,
+      "win_rate_on_active_rows": 0.651706,
+      "active_trade_rows": 1114
+    },
+    {
+      "model_name": "randomforest",
+      "model_path": "D:\\FinSentinel\\models\\signal_model\\randomforest_signal_model.pkl",
+      "rows_evaluated": 4990,
+      "accuracy": 0.511824,
+      "balanced_accuracy": 0.387972,
+      "macro_f1": 0.386885,
+      "weighted_f1": 0.49442,
+      "macro_precision": 0.391085,
+      "macro_recall": 0.387972,
+      "avg_prediction_confidence": 0.471915,
+      "total_strategy_return": 550.120042,
+      "benchmark_return": 2993342.584253,
+      "excess_return": -2992792.464211,
+      "win_rate_on_active_rows": 0.54491,
+      "active_trade_rows": 1002
+    },
+    {
+      "model_name": "lightgbm",
+      "model_path": "D:\\FinSentinel\\models\\signal_model\\lightgbm_signal_model.pkl",
+      "rows_evaluated": 4990,
+      "accuracy": 0.423246,
+      "balanced_accuracy": 0.368522,
+      "macro_f1": 0.364582,
+      "weighted_f1": 0.443321,
+      "macro_precision": 0.371983,
+      "macro_recall": 0.368522,
+      "avg_prediction_confidence": 0.508193,
+      "total_strategy_return": 71.524208,
+      "benchmark_return": 2993342.584253,
+      "excess_return": -2993271.060045,
+      "win_rate_on_active_rows": 0.52745,
+      "active_trade_rows": 1439
+    }
+  ]
+}

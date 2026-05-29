@@ -1,0 +1,150 @@
+{
+  "model_name": "lightgbm",
+  "input_path": "D:\\FinSentinel\\data\\processed\\signal_dataset.csv",
+  "model_path": "models\\signal_model\\lightgbm_signal_model.pkl",
+  "train_rows": 19840,
+  "test_rows": 4990,
+  "total_rows": 24830,
+  "numeric_features": [
+    "ATR",
+    "ATR_Pct",
+    "Adj Close",
+    "Annualized_Volatility",
+    "BB_Position",
+    "BB_Width",
+    "Close",
+    "Close_Above_SMA20",
+    "Close_Above_SMA200",
+    "Close_Above_SMA50",
+    "Close_Position",
+    "Daily_Range",
+    "Distance_SMA20",
+    "Distance_SMA200",
+    "Distance_SMA50",
+    "EMA_12",
+    "EMA_26",
+    "Gap",
+    "High",
+    "Log_Return",
+    "Low",
+    "MACD",
+    "MACD_Bullish",
+    "MACD_Hist",
+    "MACD_Signal",
+    "Open",
+    "RSI",
+    "Return",
+    "SMA_20",
+    "SMA_200",
+    "SMA_50",
+    "Volatility_20D",
+    "Volatility_ZScore",
+    "Volume",
+    "Volume_MA_20",
+    "Volume_Spike",
+    "Volume_ZScore",
+    "average_confidence",
+    "negative_count",
+    "negative_ratio",
+    "neutral_count",
+    "neutral_ratio",
+    "news_count",
+    "positive_count",
+    "positive_ratio",
+    "sentiment_score"
+  ],
+  "categorical_features": [
+    "dominant_label",
+    "ticker"
+  ],
+  "feature_count": 48,
+  "train_start_date": "2021-05-27 00:00:00",
+  "train_end_date": "2025-05-20 00:00:00",
+  "test_start_date": "2025-05-21 00:00:00",
+  "test_end_date": "2026-05-20 00:00:00",
+  "train_label_distribution": {
+    "HOLD": 10010,
+    "BUY": 5439,
+    "SELL": 4391
+  },
+  "test_label_distribution": {
+    "HOLD": 2864,
+    "BUY": 1161,
+    "SELL": 965
+  },
+  "train_metrics": {
+    "accuracy": 0.841935,
+    "balanced_accuracy": 0.863678,
+    "macro_f1": 0.841844,
+    "weighted_f1": 0.84196,
+    "macro_precision": 0.829014,
+    "macro_recall": 0.863678,
+    "avg_prediction_confidence": 0.568039
+  },
+  "test_metrics": {
+    "accuracy": 0.423246,
+    "balanced_accuracy": 0.368522,
+    "macro_f1": 0.364582,
+    "weighted_f1": 0.443321,
+    "macro_precision": 0.371983,
+    "macro_recall": 0.368522,
+    "avg_prediction_confidence": 0.508193
+  },
+  "classification_report": {
+    "SELL": {
+      "precision": 0.19723714504988488,
+      "recall": 0.26632124352331604,
+      "f1-score": 0.22663139329805995,
+      "support": 965.0
+    },
+    "HOLD": {
+      "precision": 0.6588078291814946,
+      "recall": 0.5171089385474861,
+      "f1-score": 0.5794209702660407,
+      "support": 2864.0
+    },
+    "BUY": {
+      "precision": 0.2599027102154274,
+      "recall": 0.32213608957795004,
+      "f1-score": 0.2876923076923077,
+      "support": 1161.0
+    },
+    "accuracy": 0.42324649298597194,
+    "macro avg": {
+      "precision": 0.37198256148226894,
+      "recall": 0.368522090549584,
+      "f1-score": 0.3645815570854694,
+      "support": 4990.0
+    },
+    "weighted avg": {
+      "precision": 0.4767347724066235,
+      "recall": 0.42324649298597194,
+      "f1-score": 0.4433209864940557,
+      "support": 4990.0
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "SELL",
+      "HOLD",
+      "BUY"
+    ],
+    "matrix": [
+      [
+        257,
+        386,
+        322
+      ],
+      [
+        640,
+        1481,
+        743
+      ],
+      [
+        406,
+        381,
+        374
+      ]
+    ]
+  }
+}

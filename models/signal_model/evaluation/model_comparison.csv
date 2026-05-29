@@ -1,0 +1,4 @@
+model_name,model_path,rows_evaluated,accuracy,balanced_accuracy,macro_f1,weighted_f1,macro_precision,macro_recall,avg_prediction_confidence,total_strategy_return,benchmark_return,excess_return,win_rate_on_active_rows,active_trade_rows
+randomforest,D:\FinSentinel\models\signal_model\signal_model.pkl,4990,0.514629,0.460997,0.455417,0.520157,0.453671,0.460997,0.509785,705174.694419,2993342.584253,-2288167.889834,0.651706,1114
+randomforest,D:\FinSentinel\models\signal_model\randomforest_signal_model.pkl,4990,0.511824,0.387972,0.386885,0.49442,0.391085,0.387972,0.471915,550.120042,2993342.584253,-2992792.464211,0.54491,1002
+lightgbm,D:\FinSentinel\models\signal_model\lightgbm_signal_model.pkl,4990,0.423246,0.368522,0.364582,0.443321,0.371983,0.368522,0.508193,71.524208,2993342.584253,-2993271.060045,0.52745,1439
