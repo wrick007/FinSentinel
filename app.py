@@ -206,7 +206,27 @@ def make_macd_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
     )
 
     return fig
+def normalize_ticker_for_yfinance(ticker: str, exchange: str = "Auto") -> str:
+    ticker = str(ticker).strip().upper()
 
+    if not ticker:
+        return ""
+
+    if ticker.startswith("^"):
+        return ticker
+
+    if ticker.endswith(".NS") or ticker.endswith(".BO"):
+        return ticker
+
+    exchange = str(exchange).strip().upper()
+
+    if exchange == "NSE":
+        return f"{ticker}.NS"
+
+    if exchange == "BSE":
+        return f"{ticker}.BO"
+
+    return ticker
 
 def make_sentiment_table(sentiment_df: pd.DataFrame) -> pd.DataFrame:
     if sentiment_df is None or sentiment_df.empty:
@@ -340,6 +360,11 @@ def main() -> None:
         st.header("Inputs")
 
         ticker = st.text_input("Ticker", value=DEFAULT_TICKER)
+        exchange = st.selectbox(
+            "Exchange",
+            options=["Auto", "NSE", "BSE", "US"],
+            index=0,
+        )
         company_name = st.text_input("Company Name", value=DEFAULT_COMPANY_NAME)
 
         period = st.selectbox(
@@ -366,24 +391,36 @@ def main() -> None:
 
         run_button = st.button("Analyze", type="primary", use_container_width=True)
 
-    default_news = """Apple reports stronger than expected earnings and raises guidance.
-Analysts remain positive on Apple but warn about slowing hardware demand.
-Apple announces new AI features expected to improve user engagement."""
 
-    manual_news = st.text_area(
-        "Manual news/headlines",
-        value=default_news,
-        height=160,
-        help="Use one news item per line.",
-    )
-
-    st.markdown(DISCLAIMER)
+    st.markdown(
+    """
+    <div style="
+        background-color: #2b0000;
+        border: 2px solid #ff2b2b;
+        color: #ff3b3b;
+        padding: 14px 18px;
+        border-radius: 10px;
+        font-size: 18px;
+        font-weight: 700;
+        margin-top: 10px;
+        margin-bottom: 20px;
+    ">
+        FinSentinel is an educational financial signal analysis tool. 
+        It is not financial advice. Always verify information independently 
+        before making investment decisions.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
     if not run_button:
         st.info("Enter a ticker and news, then click Analyze.")
         return
 
-    ticker = ticker_clean(ticker)
+    ticker = normalize_ticker_for_yfinance(ticker, exchange)
+
+    if exchange == "US":
+        ticker = ticker.replace(".NS", "").replace(".BO", "")
 
     if not ticker:
         st.error("Ticker cannot be empty.")
@@ -403,12 +440,12 @@ Apple announces new AI features expected to improve user engagement."""
 
         with st.spinner("Fetching/preparing news..."):
             news_items, news_df = load_news_items(
-                ticker=ticker,
-                company_name=company_name,
-                manual_news=manual_news,
-                use_live_news=use_live_news,
-                max_news_items=max_news_items,
-            )
+    ticker=ticker,
+    company_name=company_name,
+    manual_news="",
+    use_live_news=use_live_news,
+    max_news_items=max_news_items,
+)
 
         if not news_items:
             st.warning("No valid news items found. Signal will use neutral sentiment.")
