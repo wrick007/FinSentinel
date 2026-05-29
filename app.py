@@ -4,7 +4,12 @@ from typing import Any, Dict, List
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-
+for key in ["USE_LOCAL_FINBERT", "FINBERT_MODEL_NAME", "HF_TOKEN"]:
+    try:
+        if key in st.secrets:
+            os.environ[key] = str(st.secrets[key])
+    except Exception:
+        pass
 from src.config import (
     APP_DESCRIPTION,
     APP_NAME,
@@ -41,7 +46,8 @@ DISCLAIMER = """
 FinSentinel is an educational financial signal analysis tool. It is not financial advice.
 Always verify information independently before making investment decisions.
 """
-
+import traceback
+from typing import Any, Dict, List
 
 st.set_page_config(
     page_title=STREAMLIT_PAGE_TITLE,
