@@ -1,0 +1,12 @@
+{
+  "rows": 417,
+  "trades": 46,
+  "hit_rate": 0.673913,
+  "avg_strategy_return_5d": 0.009734,
+  "avg_forward_return_5d": 0.004628,
+  "buy_count": 46,
+  "sell_count": 104,
+  "hold_count": 267,
+  "avg_confidence": 0.563455,
+  "avg_final_score": -0.09689
+}

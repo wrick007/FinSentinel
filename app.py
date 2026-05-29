@@ -1,9 +1,9 @@
 import traceback
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
-import gradio as gr
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 
 from src.config import (
     APP_DESCRIPTION,
@@ -12,50 +12,62 @@ from src.config import (
     DEFAULT_INTERVAL,
     DEFAULT_PERIOD,
     DEFAULT_TICKER,
-    GRADIO_SERVER_NAME,
-    GRADIO_SERVER_PORT,
-    HF_SPACE_MODE,
+    STREAMLIT_LAYOUT,
+    STREAMLIT_PAGE_ICON,
+    STREAMLIT_PAGE_TITLE,
     SUPPORTED_INTERVALS,
     SUPPORTED_PERIODS,
 )
 from src.indicators import add_all_indicators
 from src.market_data import get_price_data, get_ticker_info, get_latest_price_summary
-from src.scraper import (
-    build_news_display_table,
-    fetch_all_news,
-    news_dataframe_to_text_list,
+from src.scraper import fetch_all_news, news_dataframe_to_text_list, build_news_display_table
+from src.sentiment import analyze_news_batch, aggregate_sentiment
+from src.signal_engine import (
+    build_feature_contribution_table,
+    build_signal_table,
+    generate_signal,
 )
-from src.sentiment import aggregate_sentiment, analyze_news_batch
-from src.signal_engine import build_signal_table, generate_signal
-from src.utils import clean_text, logger, split_user_news_input, ticker_clean
+from src.advanced_indicators import build_fibonacci_table
+from src.indicator_signal_model import (
+    build_advanced_reason_table,
+    build_advanced_signal_table,
+)
+from src.risk_filters import build_risk_table
+from src.ml_signal import build_ml_signal_table
+from src.utils import clean_text, format_large_number, format_pct, safe_float, split_user_news_input, ticker_clean
 
 
 DISCLAIMER = """
-FinSentinel is an educational signal analysis tool. It is not financial advice.
+FinSentinel is an educational financial signal analysis tool. It is not financial advice.
 Always verify information independently before making investment decisions.
 """
 
 
-def make_empty_price_chart() -> go.Figure:
-    fig = go.Figure()
-    fig.update_layout(
-        title="Price chart unavailable",
-        xaxis_title="Date",
-        yaxis_title="Price",
-        height=420,
-        margin=dict(l=40, r=30, t=60, b=40),
-    )
-    return fig
+st.set_page_config(
+    page_title=STREAMLIT_PAGE_TITLE,
+    page_icon=STREAMLIT_PAGE_ICON,
+    layout=STREAMLIT_LAYOUT,
+)
 
+def safe_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-def make_price_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
+    result = df.copy()
+
+    for col in result.columns:
+        if result[col].dtype == "object":
+            result[col] = result[col].astype(str)
+
+    return result
+
+def make_price_chart(price_df: pd.DataFrame, ticker: str, show_fibonacci: bool = True) -> go.Figure:
     if price_df is None or price_df.empty:
-        return make_empty_price_chart()
+        fig = go.Figure()
+        fig.update_layout(title="Price chart unavailable", height=450)
+        return fig
 
     df = add_all_indicators(price_df).copy()
-
-    if df.empty or "Close" not in df.columns:
-        return make_empty_price_chart()
 
     fig = go.Figure()
 
@@ -90,29 +102,39 @@ def make_price_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
             )
         )
 
+    if show_fibonacci:
+        try:
+            fib_table = build_fibonacci_table(df)
+
+            for _, row in fib_table.iterrows():
+                level = row.get("Level")
+                price = safe_float(row.get("Price"), 0.0)
+
+                if price > 0 and level not in {"High", "Low"}:
+                    fig.add_hline(
+                        y=price,
+                        line_dash="dot",
+                        annotation_text=f"Fib {level}",
+                        annotation_position="right",
+                    )
+
+        except Exception:
+            pass
+
     fig.update_layout(
-        title=f"{ticker} Price Chart",
+        title=f"{ticker.upper()} Price Chart",
         xaxis_title="Date",
         yaxis_title="Price",
-        height=520,
+        height=560,
         xaxis_rangeslider_visible=False,
-        margin=dict(l=40, r=30, t=60, b=40),
+        margin=dict(l=30, r=30, t=60, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
     return fig
 
 
-def make_indicator_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
-    if price_df is None or price_df.empty:
-        fig = go.Figure()
-        fig.update_layout(
-            title="Indicator chart unavailable",
-            height=420,
-            margin=dict(l=40, r=30, t=60, b=40),
-        )
-        return fig
-
+def make_rsi_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
     df = add_all_indicators(price_df).copy()
 
     fig = go.Figure()
@@ -131,11 +153,56 @@ def make_indicator_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
     fig.add_hline(y=30, line_dash="dash", annotation_text="Oversold")
 
     fig.update_layout(
-        title=f"{ticker} RSI",
+        title=f"{ticker.upper()} RSI",
         xaxis_title="Date",
         yaxis_title="RSI",
-        height=380,
-        margin=dict(l=40, r=30, t=60, b=40),
+        height=360,
+        margin=dict(l=30, r=30, t=60, b=40),
+    )
+
+    return fig
+
+
+def make_macd_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
+    df = add_all_indicators(price_df).copy()
+
+    fig = go.Figure()
+
+    if "MACD" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["MACD"],
+                mode="lines",
+                name="MACD",
+            )
+        )
+
+    if "MACD_Signal" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["MACD_Signal"],
+                mode="lines",
+                name="MACD Signal",
+            )
+        )
+
+    if "MACD_Hist" in df.columns:
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["MACD_Hist"],
+                name="MACD Histogram",
+            )
+        )
+
+    fig.update_layout(
+        title=f"{ticker.upper()} MACD",
+        xaxis_title="Date",
+        yaxis_title="MACD",
+        height=360,
+        margin=dict(l=30, r=30, t=60, b=40),
     )
 
     return fig
@@ -161,7 +228,7 @@ def make_sentiment_table(sentiment_df: pd.DataFrame) -> pd.DataFrame:
         {
             "Text": df["text"].apply(lambda x: clean_text(x)[:180]),
             "Label": df["label"],
-            "Score": df["sentiment_score"].round(3),
+            "Score": df["sentiment_score"].round(4),
             "Confidence": (df["confidence"] * 100).round(2).astype(str) + "%",
             "Positive": (df["positive_prob"] * 100).round(2).astype(str) + "%",
             "Negative": (df["negative_prob"] * 100).round(2).astype(str) + "%",
@@ -172,373 +239,369 @@ def make_sentiment_table(sentiment_df: pd.DataFrame) -> pd.DataFrame:
     return display
 
 
-def build_status_markdown(
-    ticker: str,
-    company_name: str,
-    signal_result: Dict[str, Any],
-    price_summary: Dict[str, Any],
-    ticker_info: Dict[str, Any],
-) -> str:
-    signal = signal_result.get("signal", "HOLD")
-    confidence = signal_result.get("confidence", 0.0)
-    risk_label = signal_result.get("risk_label", "Medium")
-    final_score = signal_result.get("final_score", 0.0)
+def get_manual_news_items(text: str) -> List[str]:
+    items = split_user_news_input(text)
 
-    latest_close = price_summary.get("latest_close", 0.0)
-    daily_return = price_summary.get("daily_return", 0.0)
-    currency = ticker_info.get("currency", "")
+    if not items:
+        cleaned = clean_text(text)
+        if cleaned:
+            items = [cleaned]
 
-    return f"""
-## {signal}
-
-**Ticker:** {ticker}  
-**Company:** {company_name or ticker_info.get("long_name", ticker)}  
-**Confidence:** {confidence:.2f}%  
-**Risk Level:** {risk_label}  
-**Final Score:** {final_score:.3f}  
-
-**Latest Close:** {latest_close} {currency}  
-**Daily Return:** {daily_return * 100:.2f}%  
-
-{DISCLAIMER}
-"""
+    return items
 
 
-def analyze_manual_news(
+def load_news_items(
     ticker: str,
     company_name: str,
     manual_news: str,
-    period: str,
-    interval: str,
-) -> Tuple[str, pd.DataFrame, pd.DataFrame, go.Figure, go.Figure, str]:
-    ticker = ticker_clean(ticker)
+    use_live_news: bool,
+    max_news_items: int,
+) -> tuple[List[str], pd.DataFrame]:
+    manual_items = get_manual_news_items(manual_news)
 
-    if not ticker:
-        raise gr.Error("Please enter a valid ticker.")
+    news_df = pd.DataFrame()
+    live_items = []
 
-    news_items = split_user_news_input(manual_news)
+    if use_live_news:
+        try:
+            news_df = fetch_all_news(
+                ticker=ticker,
+                company_name=company_name,
+                max_items=max_news_items,
+            )
+            live_items = news_dataframe_to_text_list(news_df)
 
-    if not news_items:
-        raise gr.Error("Please enter at least one news headline or text.")
+        except Exception as error:
+            st.warning(f"Live news fetch failed: {error}")
 
-    price_df = get_price_data(ticker=ticker, period=period, interval=interval)
-    ticker_info = get_ticker_info(ticker)
-    price_summary = get_latest_price_summary(price_df)
+    combined_items = manual_items + live_items
 
-    sentiment_df = analyze_news_batch(news_items)
-    sentiment_summary = aggregate_sentiment(sentiment_df)
+    cleaned_items = []
 
-    signal_result = generate_signal(
-        sentiment_summary=sentiment_summary,
-        price_df=price_df,
-    )
+    for item in combined_items:
+        item = clean_text(item)
+        if item and item not in cleaned_items:
+            cleaned_items.append(item)
 
-    status_md = build_status_markdown(
-        ticker=ticker,
-        company_name=company_name,
-        signal_result=signal_result,
-        price_summary=price_summary,
-        ticker_info=ticker_info,
-    )
-
-    sentiment_table = make_sentiment_table(sentiment_df)
-    signal_table = build_signal_table(signal_result)
-    price_chart = make_price_chart(price_df, ticker)
-    indicator_chart = make_indicator_chart(price_df, ticker)
-    explanation = signal_result.get("explanation", "No explanation available.")
-
-    return (
-        status_md,
-        signal_table,
-        sentiment_table,
-        price_chart,
-        indicator_chart,
-        explanation,
-    )
+    return cleaned_items[:max_news_items], news_df
 
 
-def analyze_live_news(
-    ticker: str,
-    company_name: str,
-    period: str,
-    interval: str,
-    max_news: int,
-) -> Tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame, go.Figure, go.Figure, str]:
-    ticker = ticker_clean(ticker)
+def show_metric_cards(signal_result: Dict[str, Any]) -> None:
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    if not ticker:
-        raise gr.Error("Please enter a valid ticker.")
+    col1.metric("Final Signal", signal_result.get("final_signal", "HOLD"))
+    col2.metric("Confidence", signal_result.get("confidence_label", "Low"))
+    col3.metric("Final Score", round(safe_float(signal_result.get("final_score")), 4))
+    col4.metric("Risk Level", signal_result.get("risk_level", "Low"))
+    col5.metric("Sentiment", round(safe_float(signal_result.get("sentiment_score")), 4))
 
-    price_df = get_price_data(ticker=ticker, period=period, interval=interval)
-    ticker_info = get_ticker_info(ticker)
-    price_summary = get_latest_price_summary(price_df)
 
-    news_df = fetch_all_news(
-        ticker=ticker,
-        company_name=company_name,
-        max_items=int(max_news),
-    )
+def show_price_summary(price_df: pd.DataFrame) -> None:
+    if price_df is None or price_df.empty:
+        return
 
-    news_items = news_dataframe_to_text_list(news_df)
+    df = price_df.copy()
 
-    if not news_items:
-        sentiment_df = analyze_news_batch([])
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [col[0] for col in df.columns]
+
+    close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+    volume = pd.to_numeric(df["Volume"], errors="coerce").dropna() if "Volume" in df.columns else pd.Series(dtype=float)
+
+    if close.empty:
+        return
+
+    last_close = float(close.iloc[-1])
+
+    if len(close) >= 2:
+        prev_close = float(close.iloc[-2])
+        change = last_close - prev_close
+        change_pct = change / prev_close if prev_close else 0.0
     else:
-        sentiment_df = analyze_news_batch(news_items)
+        change = 0.0
+        change_pct = 0.0
 
-    sentiment_summary = aggregate_sentiment(sentiment_df)
+    latest_volume = float(volume.iloc[-1]) if not volume.empty else 0.0
 
-    signal_result = generate_signal(
-        sentiment_summary=sentiment_summary,
-        price_df=price_df,
-    )
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    status_md = build_status_markdown(
-        ticker=ticker,
-        company_name=company_name,
-        signal_result=signal_result,
-        price_summary=price_summary,
-        ticker_info=ticker_info,
-    )
-
-    news_table = build_news_display_table(news_df)
-    sentiment_table = make_sentiment_table(sentiment_df)
-    signal_table = build_signal_table(signal_result)
-    price_chart = make_price_chart(price_df, ticker)
-    indicator_chart = make_indicator_chart(price_df, ticker)
-    explanation = signal_result.get("explanation", "No explanation available.")
-
-    return (
-        status_md,
-        signal_table,
-        news_table,
-        sentiment_table,
-        price_chart,
-        indicator_chart,
-        explanation,
-    )
+    col1.metric("Last Close", f"{last_close:.2f}")
+    col2.metric("Change", f"{change:.2f}")
+    col3.metric("Change %", f"{change_pct * 100:.2f}%")
+    col4.metric("Volume", format_large_number(latest_volume))
+    col5.metric("Market Cap", "N/A")
 
 
-def safe_manual_wrapper(
-    ticker: str,
-    company_name: str,
-    manual_news: str,
-    period: str,
-    interval: str,
-):
-    try:
-        return analyze_manual_news(
-            ticker=ticker,
-            company_name=company_name,
-            manual_news=manual_news,
-            period=period,
-            interval=interval,
+def main() -> None:
+    st.title(APP_NAME)
+    st.caption(APP_DESCRIPTION)
+
+    with st.sidebar:
+        st.header("Inputs")
+
+        ticker = st.text_input("Ticker", value=DEFAULT_TICKER)
+        company_name = st.text_input("Company Name", value=DEFAULT_COMPANY_NAME)
+
+        period = st.selectbox(
+            "Price Period",
+            options=SUPPORTED_PERIODS,
+            index=SUPPORTED_PERIODS.index(DEFAULT_PERIOD)
+            if DEFAULT_PERIOD in SUPPORTED_PERIODS
+            else 2,
         )
 
-    except gr.Error:
-        raise
+        interval = st.selectbox(
+            "Price Interval",
+            options=SUPPORTED_INTERVALS,
+            index=SUPPORTED_INTERVALS.index(DEFAULT_INTERVAL)
+            if DEFAULT_INTERVAL in SUPPORTED_INTERVALS
+            else 0,
+        )
+
+        use_live_news = st.checkbox("Fetch live news", value=True)
+        use_ml_model = st.checkbox("Use trained ML signal model if available", value=True)
+        show_fibonacci = st.checkbox("Show Fibonacci levels on chart", value=True)
+
+        max_news_items = st.slider("Max news items", min_value=1, max_value=25, value=10)
+
+        run_button = st.button("Analyze", type="primary", use_container_width=True)
+
+    default_news = """Apple reports stronger than expected earnings and raises guidance.
+Analysts remain positive on Apple but warn about slowing hardware demand.
+Apple announces new AI features expected to improve user engagement."""
+
+    manual_news = st.text_area(
+        "Manual news/headlines",
+        value=default_news,
+        height=160,
+        help="Use one news item per line.",
+    )
+
+    st.markdown(DISCLAIMER)
+
+    if not run_button:
+        st.info("Enter a ticker and news, then click Analyze.")
+        return
+
+    ticker = ticker_clean(ticker)
+
+    if not ticker:
+        st.error("Ticker cannot be empty.")
+        return
+
+    try:
+        with st.spinner("Fetching price data..."):
+            price_df = get_price_data(
+                ticker=ticker,
+                period=period,
+                interval=interval,
+            )
+
+        if price_df is None or price_df.empty:
+            st.error("No price data found.")
+            return
+
+        with st.spinner("Fetching/preparing news..."):
+            news_items, news_df = load_news_items(
+                ticker=ticker,
+                company_name=company_name,
+                manual_news=manual_news,
+                use_live_news=use_live_news,
+                max_news_items=max_news_items,
+            )
+
+        if not news_items:
+            st.warning("No valid news items found. Signal will use neutral sentiment.")
+
+        with st.spinner("Running fine-tuned FinBERT sentiment..."):
+            sentiment_df = analyze_news_batch(news_items)
+            sentiment_summary = aggregate_sentiment(sentiment_df)
+
+        with st.spinner("Generating Buy/Hold/Sell signal..."):
+            signal_result = generate_signal(
+                price_df=price_df,
+                sentiment_summary=sentiment_summary,
+                sentiment_df=sentiment_df,
+                ticker=ticker,
+                use_ml_model=use_ml_model,
+            )
+
+        st.subheader("Final Decision")
+        show_metric_cards(signal_result)
+        st.info(signal_result.get("message", ""))
+
+        try:
+            show_price_summary(price_df)
+        except Exception as error:
+            st.warning(f"Price summary unavailable: {error}")
+
+        overview_tab, charts_tab, sentiment_tab, signal_tab, advanced_tab, risk_tab, ml_tab, news_tab = st.tabs(
+            [
+                "Overview",
+                "Charts",
+                "Sentiment",
+                "Signal Breakdown",
+                "Advanced Indicators",
+                "Risk Filters",
+                "ML Signal",
+                "News",
+            ]
+        )
+
+        with overview_tab:
+            st.subheader("Signal Summary")
+            st.dataframe(
+                build_signal_table(signal_result),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.subheader("Feature Contributions")
+            st.dataframe(
+                build_feature_contribution_table(signal_result),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with charts_tab:
+            st.plotly_chart(
+                make_price_chart(price_df, ticker, show_fibonacci=show_fibonacci),
+                use_container_width=True,
+            )
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.plotly_chart(make_rsi_chart(price_df, ticker), use_container_width=True)
+
+            with c2:
+                st.plotly_chart(make_macd_chart(price_df, ticker), use_container_width=True)
+
+            st.subheader("Fibonacci Levels")
+            try:
+                st.dataframe(
+                    build_fibonacci_table(price_df),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            except Exception as error:
+                st.warning(f"Could not build Fibonacci table: {error}")
+
+        with sentiment_tab:
+            st.subheader("Sentiment Summary")
+
+            summary_rows = [
+                {"Metric": "Sentiment Score", "Value": sentiment_summary.get("sentiment_score", 0.0)},
+                {"Metric": "Average Confidence", "Value": sentiment_summary.get("average_confidence", 0.0)},
+                {"Metric": "News Count", "Value": sentiment_summary.get("news_count", 0)},
+                {"Metric": "Positive Count", "Value": sentiment_summary.get("positive_count", 0)},
+                {"Metric": "Negative Count", "Value": sentiment_summary.get("negative_count", 0)},
+                {"Metric": "Neutral Count", "Value": sentiment_summary.get("neutral_count", 0)},
+                {"Metric": "Dominant Label", "Value": sentiment_summary.get("dominant_label", "neutral")},
+            ]
+
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+            st.subheader("Per-news FinBERT Results")
+            st.dataframe(
+                make_sentiment_table(sentiment_df),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with signal_tab:
+            st.subheader("Raw Signal Data")
+            st.json(
+                {
+                    "final_signal": signal_result.get("final_signal"),
+                    "raw_signal": signal_result.get("signal"),
+                    "final_score": signal_result.get("final_score"),
+                    "preliminary_score": signal_result.get("preliminary_score"),
+                    "confidence": signal_result.get("confidence"),
+                    "risk_level": signal_result.get("risk_level"),
+                    "override": signal_result.get("override"),
+                }
+            )
+
+            st.subheader("Indicator State")
+            st.json(signal_result.get("indicator_summary", {}))
+
+        with advanced_tab:
+            advanced_signal = signal_result.get("advanced_signal", {})
+
+            st.subheader("Advanced Indicator Score")
+            st.dataframe(
+                build_advanced_signal_table(advanced_signal),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.subheader("Advanced Indicator Reasons")
+            st.dataframe(
+                build_advanced_reason_table(advanced_signal),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            with st.expander("Advanced indicator raw values"):
+                st.json(advanced_signal.get("advanced_indicators", {}))
+
+        with risk_tab:
+            risk_result = signal_result.get("risk_result", {})
+
+            st.subheader("Risk Result")
+            risk_cols = st.columns(4)
+            risk_cols[0].metric("Risk Level", risk_result.get("risk_level", "Low"))
+            risk_cols[1].metric("Risk Penalty", risk_result.get("risk_penalty", 0.0))
+            risk_cols[2].metric("Risk Score", risk_result.get("risk_score", 0.0))
+            risk_cols[3].metric("Blocker", str(risk_result.get("has_blocker", False)))
+
+            st.subheader("Triggered Risk Filters")
+            st.dataframe(
+                build_risk_table(risk_result),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with ml_tab:
+            ml_result = signal_result.get("ml_signal", {})
+
+            st.subheader("ML Signal Model")
+            st.dataframe(
+                build_ml_signal_table(ml_result),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            with st.expander("ML raw output"):
+                st.json(ml_result)
+
+        with news_tab:
+            st.subheader("News Used")
+            st.write(f"Total news/headlines used: {len(news_items)}")
+
+            for idx, item in enumerate(news_items, start=1):
+                st.markdown(f"**{idx}.** {item}")
+
+            if news_df is not None and not news_df.empty:
+                st.subheader("Fetched News Table")
+                try:
+                    st.dataframe(
+                        build_news_display_table(news_df),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                except Exception:
+                    st.dataframe(news_df, use_container_width=True)
+
+        st.warning(DISCLAIMER)
 
     except Exception as error:
-        logger.exception("Manual analysis failed: %s", error)
-        error_message = f"Analysis failed: {error}"
-        traceback_text = traceback.format_exc(limit=2)
+        st.error(f"Analysis failed: {error}")
 
-        return (
-            f"## ERROR\n\n{error_message}",
-            pd.DataFrame(columns=["Metric", "Value"]),
-            pd.DataFrame(),
-            make_empty_price_chart(),
-            make_empty_price_chart(),
-            traceback_text,
-        )
-
-
-def safe_live_wrapper(
-    ticker: str,
-    company_name: str,
-    period: str,
-    interval: str,
-    max_news: int,
-):
-    try:
-        return analyze_live_news(
-            ticker=ticker,
-            company_name=company_name,
-            period=period,
-            interval=interval,
-            max_news=max_news,
-        )
-
-    except gr.Error:
-        raise
-
-    except Exception as error:
-        logger.exception("Live news analysis failed: %s", error)
-        error_message = f"Analysis failed: {error}"
-        traceback_text = traceback.format_exc(limit=2)
-
-        return (
-            f"## ERROR\n\n{error_message}",
-            pd.DataFrame(columns=["Metric", "Value"]),
-            pd.DataFrame(),
-            pd.DataFrame(),
-            make_empty_price_chart(),
-            make_empty_price_chart(),
-            traceback_text,
-        )
-
-
-custom_css = """
-#main-title {
-    text-align: center;
-}
-.signal-box {
-    border-radius: 16px;
-}
-"""
-
-
-with gr.Blocks(
-    title=APP_NAME,
-    css=custom_css,
-    theme=gr.themes.Soft(),
-) as demo:
-    gr.Markdown(f"# {APP_NAME}", elem_id="main-title")
-    gr.Markdown(APP_DESCRIPTION)
-    gr.Markdown(DISCLAIMER)
-
-    with gr.Row():
-        ticker_input = gr.Textbox(
-            label="Ticker",
-            value=DEFAULT_TICKER,
-            placeholder="Example: AAPL, MSFT, TSLA, INFY.NS",
-        )
-
-        company_input = gr.Textbox(
-            label="Company Name",
-            value=DEFAULT_COMPANY_NAME,
-            placeholder="Example: Apple",
-        )
-
-    with gr.Row():
-        period_input = gr.Dropdown(
-            label="Price Period",
-            choices=SUPPORTED_PERIODS,
-            value=DEFAULT_PERIOD,
-        )
-
-        interval_input = gr.Dropdown(
-            label="Price Interval",
-            choices=SUPPORTED_INTERVALS,
-            value=DEFAULT_INTERVAL,
-        )
-
-    with gr.Tab("Manual News Analysis"):
-        manual_news_input = gr.Textbox(
-            label="Paste news headlines or financial text",
-            lines=7,
-            placeholder=(
-                "Paste one headline per line.\n"
-                "Example: Apple reports stronger-than-expected quarterly earnings."
-            ),
-        )
-
-        manual_button = gr.Button("Analyze Manual News", variant="primary")
-
-        manual_status = gr.Markdown()
-        manual_signal_table = gr.Dataframe(label="Signal Breakdown")
-        manual_sentiment_table = gr.Dataframe(label="Sentiment Table")
-        manual_price_chart = gr.Plot(label="Price Chart")
-        manual_indicator_chart = gr.Plot(label="Indicator Chart")
-        manual_explanation = gr.Textbox(
-            label="Explanation",
-            lines=6,
-        )
-
-        manual_button.click(
-            fn=safe_manual_wrapper,
-            inputs=[
-                ticker_input,
-                company_input,
-                manual_news_input,
-                period_input,
-                interval_input,
-            ],
-            outputs=[
-                manual_status,
-                manual_signal_table,
-                manual_sentiment_table,
-                manual_price_chart,
-                manual_indicator_chart,
-                manual_explanation,
-            ],
-        )
-
-    with gr.Tab("Live News Analysis"):
-        max_news_input = gr.Slider(
-            label="Maximum News Items",
-            minimum=3,
-            maximum=25,
-            value=10,
-            step=1,
-        )
-
-        live_button = gr.Button("Fetch Live News and Analyze", variant="primary")
-
-        live_status = gr.Markdown()
-        live_signal_table = gr.Dataframe(label="Signal Breakdown")
-        live_news_table = gr.Dataframe(label="Fetched News")
-        live_sentiment_table = gr.Dataframe(label="Sentiment Table")
-        live_price_chart = gr.Plot(label="Price Chart")
-        live_indicator_chart = gr.Plot(label="Indicator Chart")
-        live_explanation = gr.Textbox(
-            label="Explanation",
-            lines=6,
-        )
-
-        live_button.click(
-            fn=safe_live_wrapper,
-            inputs=[
-                ticker_input,
-                company_input,
-                period_input,
-                interval_input,
-                max_news_input,
-            ],
-            outputs=[
-                live_status,
-                live_signal_table,
-                live_news_table,
-                live_sentiment_table,
-                live_price_chart,
-                live_indicator_chart,
-                live_explanation,
-            ],
-        )
-
-    with gr.Accordion("How FinSentinel works", open=False):
-        gr.Markdown(
-            """
-FinSentinel combines financial news sentiment, market price data, technical indicators, volume confirmation, and risk filters.
-
-The final signal is not directly equal to FinBERT sentiment. FinBERT produces a sentiment score, and the signal engine combines it with trend, momentum, volume, and risk scores.
-
-Main outputs:
-- BUY / HOLD / SELL signal
-- confidence score
-- risk level
-- explanation
-- sentiment table
-- technical chart
-"""
-        )
+        with st.expander("Error details"):
+            st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
-    demo.launch(
-        server_name=GRADIO_SERVER_NAME if HF_SPACE_MODE else None,
-        server_port=GRADIO_SERVER_PORT if HF_SPACE_MODE else None,
-        share=True,
-        inbrowser=True,
-        show_error=True,
-    )
+    main()

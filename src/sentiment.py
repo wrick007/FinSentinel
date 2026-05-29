@@ -21,12 +21,18 @@ LABEL_NORMALIZATION = {
     "positive": "positive",
     "negative": "negative",
     "neutral": "neutral",
-    "label_0": "positive",
-    "label_1": "negative",
-    "label_2": "neutral",
-    "0": "positive",
-    "1": "negative",
-    "2": "neutral",
+
+    "label_0": "negative",
+    "label_1": "neutral",
+    "label_2": "positive",
+
+    "0": "negative",
+    "1": "neutral",
+    "2": "positive",
+
+    "neg": "negative",
+    "neu": "neutral",
+    "pos": "positive",
 }
 
 
@@ -57,7 +63,7 @@ def load_finbert():
             model=model,
             tokenizer=tokenizer,
             device=_get_device(),
-            return_all_scores=True,
+            top_k=None,
             truncation=True,
             max_length=MAX_TEXT_LENGTH,
         )
@@ -166,20 +172,20 @@ def predict_sentiment(text: Any) -> Dict[str, Any]:
 def analyze_news_batch(news_items: Sequence[Any]) -> pd.DataFrame:
     cleaned_items = [clean_text(item) for item in news_items if clean_text(item)]
 
+    columns = [
+        "text",
+        "label",
+        "sentiment_score",
+        "confidence",
+        "positive_prob",
+        "negative_prob",
+        "neutral_prob",
+        "model_available",
+        "error",
+    ]
+
     if not cleaned_items:
-        return pd.DataFrame(
-            columns=[
-                "text",
-                "label",
-                "sentiment_score",
-                "confidence",
-                "positive_prob",
-                "negative_prob",
-                "neutral_prob",
-                "model_available",
-                "error",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
     sentiment_pipeline = load_finbert()
 
@@ -198,15 +204,18 @@ def analyze_news_batch(news_items: Sequence[Any]) -> pd.DataFrame:
     try:
         for start in range(0, len(cleaned_items), SENTIMENT_BATCH_SIZE):
             batch = cleaned_items[start : start + SENTIMENT_BATCH_SIZE]
-
             outputs = sentiment_pipeline(batch)
 
             for text, output in zip(batch, outputs):
                 if isinstance(output, list):
                     rows.append(_scores_to_prediction(text, output))
+
+                elif isinstance(output, dict):
+                    rows.append(_scores_to_prediction(text, [output]))
+
                 else:
                     result = _empty_prediction(text)
-                    result["error"] = "Invalid model output"
+                    result["error"] = f"Invalid model output type: {type(output)}"
                     rows.append(result)
 
     except Exception as error:
@@ -216,14 +225,16 @@ def analyze_news_batch(news_items: Sequence[Any]) -> pd.DataFrame:
         for text in cleaned_items:
             rows.append(predict_sentiment(text))
 
-    return pd.DataFrame(rows)
-
+    return pd.DataFrame(rows, columns=columns)
 
 def aggregate_sentiment(
     sentiment_df: Optional[pd.DataFrame],
     score_column: str = "sentiment_score",
     confidence_column: str = "confidence",
 ) -> Dict[str, Any]:
+    if isinstance(sentiment_df, list):
+        sentiment_df = analyze_news_batch(sentiment_df)
+
     if sentiment_df is None or sentiment_df.empty:
         return {
             "sentiment_score": 0.0,
@@ -258,7 +269,13 @@ def aggregate_sentiment(
 
     sentiment_score = clamp(sentiment_score, -1.0, 1.0)
 
-    labels = df.get("label", pd.Series(["neutral"] * len(df))).fillna("neutral").astype(str)
+    labels = (
+        df.get("label", pd.Series(["neutral"] * len(df)))
+        .fillna("neutral")
+        .astype(str)
+        .str.lower()
+        .str.strip()
+    )
 
     positive_count = int((labels == "positive").sum())
     negative_count = int((labels == "negative").sum())
@@ -285,7 +302,6 @@ def aggregate_sentiment(
         "neutral_ratio": round(neutral_count / news_count, 6) if news_count else 1.0,
         "dominant_label": dominant_label,
     }
-
 
 def analyze_text_input(text: Any) -> Dict[str, Any]:
     text = clean_text(text)
