@@ -13,8 +13,13 @@ __pycache__/
 
 data/raw/
 data/news_cache/
+data/processed/backtests/
+
 models/
+hf_finbert_upload/
 outputs/
+
+.streamlit/secrets.toml
 
 .DS_Store
 Thumbs.db
