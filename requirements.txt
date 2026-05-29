@@ -1,6 +1,8 @@
 gradio
+streamlit
 transformers
 torch
+torchvision
 pandas
 numpy
 yfinance
@@ -19,18 +21,6 @@ datasets
 accelerate
 evaluate
 sentencepiece
-streamlit
-pandas
-numpy
-plotly
-yfinance
-torch
-transformers
-scikit-learn
-requests
-beautifulsoup4
-feedparser
 lxml
-joblib
 scipy
 safetensors
