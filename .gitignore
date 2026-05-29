@@ -16,6 +16,8 @@ data/news_cache/
 data/processed/backtests/
 
 models/
+!models/signal_model/
+!models/signal_model/signal_model.pkl
 hf_finbert_upload/
 outputs/
 
