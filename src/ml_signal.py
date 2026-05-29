@@ -105,7 +105,7 @@ def _resolve_feature_columns(
     feature_columns = package.get("feature_columns") or []
 
     if feature_columns:
-        return [col for col in feature_columns if col in feature_row]
+        return list(feature_columns)
 
     numeric_features = package.get("numeric_features") or []
     categorical_features = package.get("categorical_features") or []
@@ -220,6 +220,15 @@ def build_live_feature_row(
             value = row.get(col)
             if pd.api.types.is_numeric_dtype(price_df[col]):
                 latest[col] = safe_float(value, 0.0)
+
+        close = safe_float(row.get("Close"), 0.0)
+        high = safe_float(row.get("High"), 0.0)
+        low = safe_float(row.get("Low"), 0.0)
+
+        if high > low and close > 0:
+            latest["Close_Position"] = (close - low) / (high - low)
+        else:
+            latest["Close_Position"] = 0.5
 
     feature_row = {
         "ticker": str(ticker).upper(),
