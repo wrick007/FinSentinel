@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+import os
+from huggingface_hub import hf_hub_download
 import pickle
 import numpy as np
 import pandas as pd
@@ -10,6 +11,8 @@ from src.utils import safe_float
 
 
 DEFAULT_MODEL_PATH = SIGNAL_MODEL_DIR / "signal_model.pkl"
+DEFAULT_HF_MODEL_REPO = os.getenv("SIGNAL_MODEL_REPO", "mayukh007/finsentinel")
+DEFAULT_HF_SIGNAL_FILENAME = os.getenv("SIGNAL_MODEL_FILENAME", "signal_model/signal_model.pkl")
 
 LABEL_ID_TO_NAME = {
     0: "SELL",
@@ -39,18 +42,30 @@ def _empty_ml_signal(message: str = "ML signal model unavailable.") -> Dict[str,
         "error": None,
     }
 
-
 def load_signal_model_package(
     model_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     model_path = Path(model_path or DEFAULT_MODEL_PATH)
 
     if not model_path.exists():
-        return {
-            "available": False,
-            "error": f"Signal model not found at {model_path}",
-            "package": None,
-        }
+        try:
+            token = os.getenv("HF_TOKEN", None) or None
+
+            downloaded_path = hf_hub_download(
+                repo_id=DEFAULT_HF_MODEL_REPO,
+                filename=DEFAULT_HF_SIGNAL_FILENAME,
+                repo_type="model",
+                token=token,
+            )
+
+            model_path = Path(downloaded_path)
+
+        except Exception as error:
+            return {
+                "available": False,
+                "error": f"Signal model not found locally and Hugging Face download failed: {error}",
+                "package": None,
+            }
 
     try:
         with open(model_path, "rb") as file:
@@ -82,7 +97,6 @@ def load_signal_model_package(
             "error": str(error),
             "package": None,
         }
-
 
 def _resolve_feature_columns(
     package: Dict[str, Any],
