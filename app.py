@@ -451,14 +451,14 @@ Apple announces new AI features expected to improve user engagement."""
         with overview_tab:
             st.subheader("Signal Summary")
             st.dataframe(
-                build_signal_table(signal_result),
+                safe_display_df(build_signal_table(signal_result)),
                 use_container_width=True,
                 hide_index=True,
             )
 
             st.subheader("Feature Contributions")
             st.dataframe(
-                build_feature_contribution_table(signal_result),
+                safe_display_df(build_feature_contribution_table(signal_result)),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -500,7 +500,7 @@ Apple announces new AI features expected to improve user engagement."""
                 {"Metric": "Dominant Label", "Value": sentiment_summary.get("dominant_label", "neutral")},
             ]
 
-            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+            st.dataframe(safe_display_df(pd.DataFrame(summary_rows)), use_container_width=True, hide_index=True)
 
             st.subheader("Per-news FinBERT Results")
             st.dataframe(
