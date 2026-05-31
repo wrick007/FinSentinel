@@ -1,21 +1,31 @@
+import os
 import traceback
 from typing import Any, Dict, List
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
 for key in [
     "USE_LOCAL_FINBERT",
     "FINBERT_MODEL_NAME",
     "HF_TOKEN",
     "SIGNAL_MODEL_REPO",
     "SIGNAL_MODEL_FILENAME",
+    "GEMMA_MODEL",
+    "USE_GEMMA_REASONER",
+    "USE_REMOTE_GEMMA",
 ]:
     try:
         if key in st.secrets:
             os.environ[key] = str(st.secrets[key])
     except Exception:
         pass
+
 from src.config import (
     APP_DESCRIPTION,
     APP_NAME,
@@ -30,8 +40,12 @@ from src.config import (
     SUPPORTED_PERIODS,
 )
 from src.indicators import add_all_indicators
-from src.market_data import get_price_data, get_ticker_info, get_latest_price_summary
-from src.scraper import fetch_all_news, news_dataframe_to_text_list, build_news_display_table
+from src.market_data import get_price_data
+from src.scraper import (
+    fetch_all_news,
+    news_dataframe_to_text_list,
+    build_news_display_table,
+)
 from src.sentiment import analyze_news_batch, aggregate_sentiment
 from src.signal_engine import (
     build_feature_contribution_table,
@@ -45,21 +59,135 @@ from src.indicator_signal_model import (
 )
 from src.risk_filters import build_risk_table
 from src.ml_signal import build_ml_signal_table
-from src.utils import clean_text, format_large_number, format_pct, safe_float, split_user_news_input, ticker_clean
+from src.utils import (
+    clean_text,
+    format_large_number,
+    safe_float,
+    split_user_news_input,
+)
+
+try:
+    from src.gemma_remote_reasoner import generate_remote_gemma_reasoning
+    from src.explanation import generate_rule_based_explanation
+except Exception:
+    generate_remote_gemma_reasoning = None
+
+    def generate_rule_based_explanation(payload: Dict[str, Any]) -> str:
+        final_signal = payload.get("final_signal", "HOLD")
+        confidence = payload.get("confidence_label", payload.get("confidence", "Low"))
+        sentiment = payload.get("sentiment", {})
+        risk = payload.get("risk", {})
+
+        return (
+            f"Signal Summary:\n"
+            f"The final model-generated signal is {final_signal} with confidence {confidence}.\n\n"
+            f"Main Reasons:\n"
+            f"Sentiment score is {sentiment.get('score', 0)} and dominant sentiment is "
+            f"{sentiment.get('label', 'neutral')}. The app also used technical, ML, and risk inputs.\n\n"
+            f"Risk Factors:\n"
+            f"Current risk level is {risk.get('risk_level', 'unknown')}. "
+            f"The signal can be wrong if market conditions change suddenly.\n\n"
+            f"Final View:\n"
+            f"Use this as an educational model-assisted signal, not guaranteed financial advice."
+        )
 
 
 DISCLAIMER = """
 FinSentinel is an educational financial signal analysis tool. It is not financial advice.
 Always verify information independently before making investment decisions.
 """
-import traceback
-from typing import Any, Dict, List
 
 st.set_page_config(
     page_title=STREAMLIT_PAGE_TITLE,
     page_icon=STREAMLIT_PAGE_ICON,
     layout=STREAMLIT_LAYOUT,
 )
+
+
+def get_gemma_reasoning(signal_payload: Dict[str, Any]) -> str:
+    use_gemma = os.getenv("USE_GEMMA_REASONER", "true").lower() == "true"
+    use_remote_gemma = os.getenv("USE_REMOTE_GEMMA", "true").lower() == "true"
+
+    if not use_gemma:
+        return generate_rule_based_explanation(signal_payload)
+
+    if use_remote_gemma and generate_remote_gemma_reasoning is not None:
+        return generate_remote_gemma_reasoning(signal_payload)
+
+    return (
+        generate_rule_based_explanation(signal_payload)
+        + "\n\nGemma Status:\nRemote Gemma is disabled or unavailable, so fallback reasoning was used."
+    )
+
+
+def build_gemma_payload(
+    ticker: str,
+    signal_result: Dict[str, Any],
+    sentiment_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    indicator_summary = signal_result.get("indicator_summary", {}) or {}
+    ml_result = signal_result.get("ml_signal", {}) or {}
+    risk_result = signal_result.get("risk_result", {}) or {}
+    advanced_signal = signal_result.get("advanced_signal", {}) or {}
+
+    return {
+        "ticker": ticker,
+        "final_signal": signal_result.get("final_signal", "HOLD"),
+        "raw_signal": signal_result.get("signal", "HOLD"),
+        "final_score": signal_result.get("final_score", 0),
+        "preliminary_score": signal_result.get("preliminary_score", 0),
+        "confidence": signal_result.get("confidence", 0),
+        "confidence_label": signal_result.get("confidence_label", "Low"),
+        "message": signal_result.get("message", ""),
+        "sentiment": {
+            "label": sentiment_summary.get("dominant_label", "neutral"),
+            "score": sentiment_summary.get("sentiment_score", 0),
+            "average_confidence": sentiment_summary.get("average_confidence", 0),
+            "news_count": sentiment_summary.get("news_count", 0),
+            "positive_count": sentiment_summary.get("positive_count", 0),
+            "negative_count": sentiment_summary.get("negative_count", 0),
+            "neutral_count": sentiment_summary.get("neutral_count", 0),
+        },
+        "technical": {
+            "rsi": indicator_summary.get("RSI"),
+            "macd": indicator_summary.get("MACD"),
+            "macd_signal": indicator_summary.get("MACD_Signal"),
+            "macd_hist": indicator_summary.get("MACD_Hist"),
+            "sma20": indicator_summary.get("SMA_20"),
+            "sma50": indicator_summary.get("SMA_50"),
+            "sma200": indicator_summary.get("SMA_200"),
+            "price_above_sma20": indicator_summary.get("Close_Above_SMA20"),
+            "price_above_sma50": indicator_summary.get("Close_Above_SMA50"),
+            "price_above_sma200": indicator_summary.get("Close_Above_SMA200"),
+            "atr_pct": indicator_summary.get("ATR_Pct"),
+            "bb_position": indicator_summary.get("BB_Position"),
+            "bb_width": indicator_summary.get("BB_Width"),
+        },
+        "ml_model": {
+            "available": ml_result.get("available", False),
+            "signal": ml_result.get("ml_signal", "HOLD"),
+            "score": ml_result.get("ml_score", 0),
+            "confidence": ml_result.get("ml_confidence", 0),
+            "probabilities": ml_result.get("ml_probabilities", {}),
+            "model_name": ml_result.get("model_name", ""),
+        },
+        "advanced_signal": {
+            "signal": advanced_signal.get("signal"),
+            "score": advanced_signal.get("score"),
+            "reasons": advanced_signal.get("reasons", []),
+        },
+        "risk": {
+            "risk_level": risk_result.get(
+                "risk_level",
+                signal_result.get("risk_level", "Low"),
+            ),
+            "risk_penalty": risk_result.get("risk_penalty", 0),
+            "risk_score": risk_result.get("risk_score", 0),
+            "has_blocker": risk_result.get("has_blocker", False),
+            "reasons": risk_result.get("reasons", []),
+        },
+    }
+
 
 def safe_display_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -69,11 +197,45 @@ def safe_display_df(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in result.columns:
         if result[col].dtype == "object":
-            result[col] = result[col].astype(str)
+            result[col] = result[col].apply(lambda x: "" if pd.isna(x) else str(x))
 
     return result
 
-def make_price_chart(price_df: pd.DataFrame, ticker: str, show_fibonacci: bool = True) -> go.Figure:
+
+def ensure_missing_ml_features(price_df: pd.DataFrame) -> pd.DataFrame:
+    if price_df is None or price_df.empty:
+        return price_df
+
+    df = price_df.copy()
+
+    if "Close" in df.columns:
+        close = pd.to_numeric(df["Close"], errors="coerce")
+
+        if "High" in df.columns and "Low" in df.columns:
+            high = pd.to_numeric(df["High"], errors="coerce")
+            low = pd.to_numeric(df["Low"], errors="coerce")
+            price_range = high - low
+
+            df["Close_Position"] = (
+                (close - low) / price_range.replace(0, pd.NA)
+            ).fillna(0.5)
+        else:
+            df["Close_Position"] = 0.5
+
+    if "Volume" in df.columns:
+        volume = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
+        df["Volume_MA_20"] = volume.rolling(window=20, min_periods=1).mean()
+    else:
+        df["Volume_MA_20"] = 0.0
+
+    return df
+
+
+def make_price_chart(
+    price_df: pd.DataFrame,
+    ticker: str,
+    show_fibonacci: bool = True,
+) -> go.Figure:
     if price_df is None or price_df.empty:
         fig = go.Figure()
         fig.update_layout(title="Price chart unavailable", height=450)
@@ -140,7 +302,13 @@ def make_price_chart(price_df: pd.DataFrame, ticker: str, show_fibonacci: bool =
         height=560,
         xaxis_rangeslider_visible=False,
         margin=dict(l=30, r=30, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+        ),
     )
 
     return fig
@@ -218,6 +386,8 @@ def make_macd_chart(price_df: pd.DataFrame, ticker: str) -> go.Figure:
     )
 
     return fig
+
+
 def normalize_ticker_for_yfinance(ticker: str, exchange: str = "Auto") -> str:
     ticker = str(ticker).strip().upper()
 
@@ -239,6 +409,7 @@ def normalize_ticker_for_yfinance(ticker: str, exchange: str = "Auto") -> str:
         return f"{ticker}.BO"
 
     return ticker
+
 
 def make_sentiment_table(sentiment_df: pd.DataFrame) -> pd.DataFrame:
     if sentiment_df is None or sentiment_df.empty:
@@ -276,6 +447,7 @@ def get_manual_news_items(text: str) -> List[str]:
 
     if not items:
         cleaned = clean_text(text)
+
         if cleaned:
             items = [cleaned]
 
@@ -312,6 +484,7 @@ def load_news_items(
 
     for item in combined_items:
         item = clean_text(item)
+
         if item and item not in cleaned_items:
             cleaned_items.append(item)
 
@@ -338,7 +511,11 @@ def show_price_summary(price_df: pd.DataFrame) -> None:
         df.columns = [col[0] for col in df.columns]
 
     close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-    volume = pd.to_numeric(df["Volume"], errors="coerce").dropna() if "Volume" in df.columns else pd.Series(dtype=float)
+
+    if "Volume" in df.columns:
+        volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
+    else:
+        volume = pd.Series(dtype=float)
 
     if close.empty:
         return
@@ -372,11 +549,13 @@ def main() -> None:
         st.header("Inputs")
 
         ticker = st.text_input("Ticker", value=DEFAULT_TICKER)
+
         exchange = st.selectbox(
             "Exchange",
             options=["Auto", "NSE", "BSE", "US"],
             index=0,
         )
+
         company_name = st.text_input("Company Name", value=DEFAULT_COMPANY_NAME)
 
         period = st.selectbox(
@@ -399,31 +578,39 @@ def main() -> None:
         use_ml_model = st.checkbox("Use trained ML signal model if available", value=True)
         show_fibonacci = st.checkbox("Show Fibonacci levels on chart", value=True)
 
-        max_news_items = st.slider("Max news items", min_value=1, max_value=25, value=10)
+        max_news_items = st.slider(
+            "Max news items",
+            min_value=1,
+            max_value=25,
+            value=10,
+        )
 
-        run_button = st.button("Analyze", type="primary", use_container_width=True)
-
+        run_button = st.button(
+            "Analyze",
+            type="primary",
+            width="stretch",
+        )
 
     st.markdown(
-    """
-    <div style="
-        background-color: #2b0000;
-        border: 2px solid #ff2b2b;
-        color: #ff3b3b;
-        padding: 14px 18px;
-        border-radius: 10px;
-        font-size: 18px;
-        font-weight: 700;
-        margin-top: 10px;
-        margin-bottom: 20px;
-    ">
-        FinSentinel is an educational financial signal analysis tool. 
-        It is not financial advice. Always verify information independently 
-        before making investment decisions.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """
+        <div style="
+            background-color: #2b0000;
+            border: 2px solid #ff2b2b;
+            color: #ff3b3b;
+            padding: 14px 18px;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: 700;
+            margin-top: 10px;
+            margin-bottom: 20px;
+        ">
+            FinSentinel is an educational financial signal analysis tool. 
+            It is not financial advice. Always verify information independently 
+            before making investment decisions.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if not run_button:
         st.info("Enter a ticker and news, then click Analyze.")
@@ -450,14 +637,16 @@ def main() -> None:
             st.error("No price data found.")
             return
 
+        price_df = ensure_missing_ml_features(price_df)
+
         with st.spinner("Fetching/preparing news..."):
             news_items, news_df = load_news_items(
-    ticker=ticker,
-    company_name=company_name,
-    manual_news="",
-    use_live_news=use_live_news,
-    max_news_items=max_news_items,
-)
+                ticker=ticker,
+                company_name=company_name,
+                manual_news="",
+                use_live_news=use_live_news,
+                max_news_items=max_news_items,
+            )
 
         if not news_items:
             st.warning("No valid news items found. Signal will use neutral sentiment.")
@@ -475,6 +664,18 @@ def main() -> None:
                 use_ml_model=use_ml_model,
             )
 
+        with st.spinner("Generating remote Gemma reasoning..."):
+            gemma_payload = build_gemma_payload(
+                ticker=ticker,
+                signal_result=signal_result,
+                sentiment_summary=sentiment_summary,
+            )
+
+            gemma_reasoning = get_gemma_reasoning(gemma_payload)
+
+            signal_result["gemma_reasoning"] = gemma_reasoning
+            signal_result["gemma_payload"] = gemma_payload
+
         st.subheader("Final Decision")
         show_metric_cards(signal_result)
         st.info(signal_result.get("message", ""))
@@ -484,11 +685,22 @@ def main() -> None:
         except Exception as error:
             st.warning(f"Price summary unavailable: {error}")
 
-        overview_tab, charts_tab, sentiment_tab, signal_tab, advanced_tab, risk_tab, ml_tab, news_tab = st.tabs(
+        (
+            overview_tab,
+            charts_tab,
+            sentiment_tab,
+            reasoning_tab,
+            signal_tab,
+            advanced_tab,
+            risk_tab,
+            ml_tab,
+            news_tab,
+        ) = st.tabs(
             [
                 "Overview",
                 "Charts",
                 "Sentiment",
+                "Gemma Reasoning",
                 "Signal Breakdown",
                 "Advanced Indicators",
                 "Risk Filters",
@@ -499,40 +711,54 @@ def main() -> None:
 
         with overview_tab:
             st.subheader("Signal Summary")
+
             st.dataframe(
                 safe_display_df(build_signal_table(signal_result)),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
             st.subheader("Feature Contributions")
+
             st.dataframe(
                 safe_display_df(build_feature_contribution_table(signal_result)),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
         with charts_tab:
             st.plotly_chart(
-                make_price_chart(price_df, ticker, show_fibonacci=show_fibonacci),
-                use_container_width=True,
+                make_price_chart(
+                    price_df,
+                    ticker,
+                    show_fibonacci=show_fibonacci,
+                ),
+                width="stretch",
             )
 
             c1, c2 = st.columns(2)
 
             with c1:
-                st.plotly_chart(make_rsi_chart(price_df, ticker), use_container_width=True)
+                st.plotly_chart(
+                    make_rsi_chart(price_df, ticker),
+                    width="stretch",
+                )
 
             with c2:
-                st.plotly_chart(make_macd_chart(price_df, ticker), use_container_width=True)
+                st.plotly_chart(
+                    make_macd_chart(price_df, ticker),
+                    width="stretch",
+                )
 
             st.subheader("Fibonacci Levels")
+
             try:
                 st.dataframe(
-                    build_fibonacci_table(price_df),
-                    use_container_width=True,
+                    safe_display_df(build_fibonacci_table(price_df)),
+                    width="stretch",
                     hide_index=True,
                 )
+
             except Exception as error:
                 st.warning(f"Could not build Fibonacci table: {error}")
 
@@ -540,26 +766,69 @@ def main() -> None:
             st.subheader("Sentiment Summary")
 
             summary_rows = [
-                {"Metric": "Sentiment Score", "Value": sentiment_summary.get("sentiment_score", 0.0)},
-                {"Metric": "Average Confidence", "Value": sentiment_summary.get("average_confidence", 0.0)},
-                {"Metric": "News Count", "Value": sentiment_summary.get("news_count", 0)},
-                {"Metric": "Positive Count", "Value": sentiment_summary.get("positive_count", 0)},
-                {"Metric": "Negative Count", "Value": sentiment_summary.get("negative_count", 0)},
-                {"Metric": "Neutral Count", "Value": sentiment_summary.get("neutral_count", 0)},
-                {"Metric": "Dominant Label", "Value": sentiment_summary.get("dominant_label", "neutral")},
+                {
+                    "Metric": "Sentiment Score",
+                    "Value": sentiment_summary.get("sentiment_score", 0.0),
+                },
+                {
+                    "Metric": "Average Confidence",
+                    "Value": sentiment_summary.get("average_confidence", 0.0),
+                },
+                {
+                    "Metric": "News Count",
+                    "Value": sentiment_summary.get("news_count", 0),
+                },
+                {
+                    "Metric": "Positive Count",
+                    "Value": sentiment_summary.get("positive_count", 0),
+                },
+                {
+                    "Metric": "Negative Count",
+                    "Value": sentiment_summary.get("negative_count", 0),
+                },
+                {
+                    "Metric": "Neutral Count",
+                    "Value": sentiment_summary.get("neutral_count", 0),
+                },
+                {
+                    "Metric": "Dominant Label",
+                    "Value": sentiment_summary.get("dominant_label", "neutral"),
+                },
             ]
 
-            st.dataframe(safe_display_df(pd.DataFrame(summary_rows)), use_container_width=True, hide_index=True)
+            sentiment_summary_display = pd.DataFrame(summary_rows)
+            sentiment_summary_display["Value"] = sentiment_summary_display["Value"].astype(str)
 
-            st.subheader("Per-news FinBERT Results")
             st.dataframe(
-                make_sentiment_table(sentiment_df),
-                use_container_width=True,
+                safe_display_df(sentiment_summary_display),
+                width="stretch",
                 hide_index=True,
             )
 
+            st.subheader("Per-news FinBERT Results")
+
+            st.dataframe(
+                safe_display_df(make_sentiment_table(sentiment_df)),
+                width="stretch",
+                hide_index=True,
+            )
+
+        with reasoning_tab:
+            st.subheader("Gemma Reasoning Layer")
+
+            reasoning = signal_result.get("gemma_reasoning", "")
+
+            if reasoning:
+                st.markdown(reasoning)
+            else:
+                st.warning("No reasoning generated.")
+
+            with st.expander("Data sent to Gemma"):
+                st.json(signal_result.get("gemma_payload", {}))
+
         with signal_tab:
             st.subheader("Raw Signal Data")
+
             st.json(
                 {
                     "final_signal": signal_result.get("final_signal"),
@@ -579,16 +848,18 @@ def main() -> None:
             advanced_signal = signal_result.get("advanced_signal", {})
 
             st.subheader("Advanced Indicator Score")
+
             st.dataframe(
-                build_advanced_signal_table(advanced_signal),
-                use_container_width=True,
+                safe_display_df(build_advanced_signal_table(advanced_signal)),
+                width="stretch",
                 hide_index=True,
             )
 
             st.subheader("Advanced Indicator Reasons")
+
             st.dataframe(
-                build_advanced_reason_table(advanced_signal),
-                use_container_width=True,
+                safe_display_df(build_advanced_reason_table(advanced_signal)),
+                width="stretch",
                 hide_index=True,
             )
 
@@ -599,16 +870,34 @@ def main() -> None:
             risk_result = signal_result.get("risk_result", {})
 
             st.subheader("Risk Result")
+
             risk_cols = st.columns(4)
-            risk_cols[0].metric("Risk Level", risk_result.get("risk_level", "Low"))
-            risk_cols[1].metric("Risk Penalty", risk_result.get("risk_penalty", 0.0))
-            risk_cols[2].metric("Risk Score", risk_result.get("risk_score", 0.0))
-            risk_cols[3].metric("Blocker", str(risk_result.get("has_blocker", False)))
+
+            risk_cols[0].metric(
+                "Risk Level",
+                risk_result.get("risk_level", "Low"),
+            )
+
+            risk_cols[1].metric(
+                "Risk Penalty",
+                risk_result.get("risk_penalty", 0.0),
+            )
+
+            risk_cols[2].metric(
+                "Risk Score",
+                risk_result.get("risk_score", 0.0),
+            )
+
+            risk_cols[3].metric(
+                "Blocker",
+                str(risk_result.get("has_blocker", False)),
+            )
 
             st.subheader("Triggered Risk Filters")
+
             st.dataframe(
-                build_risk_table(risk_result),
-                use_container_width=True,
+                safe_display_df(build_risk_table(risk_result)),
+                width="stretch",
                 hide_index=True,
             )
 
@@ -616,9 +905,10 @@ def main() -> None:
             ml_result = signal_result.get("ml_signal", {})
 
             st.subheader("ML Signal Model")
+
             st.dataframe(
-                build_ml_signal_table(ml_result),
-                use_container_width=True,
+                safe_display_df(build_ml_signal_table(ml_result)),
+                width="stretch",
                 hide_index=True,
             )
 
@@ -627,6 +917,7 @@ def main() -> None:
 
         with news_tab:
             st.subheader("News Used")
+
             st.write(f"Total news/headlines used: {len(news_items)}")
 
             for idx, item in enumerate(news_items, start=1):
@@ -634,14 +925,19 @@ def main() -> None:
 
             if news_df is not None and not news_df.empty:
                 st.subheader("Fetched News Table")
+
                 try:
                     st.dataframe(
-                        build_news_display_table(news_df),
-                        use_container_width=True,
+                        safe_display_df(build_news_display_table(news_df)),
+                        width="stretch",
                         hide_index=True,
                     )
+
                 except Exception:
-                    st.dataframe(news_df, use_container_width=True)
+                    st.dataframe(
+                        safe_display_df(news_df),
+                        width="stretch",
+                    )
 
         st.warning(DISCLAIMER)
 

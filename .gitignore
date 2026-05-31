@@ -27,3 +27,5 @@ Thumbs.db
 .idea/
 
 .gradio
+
+hf_cache/
